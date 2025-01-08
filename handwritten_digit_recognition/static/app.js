@@ -1,23 +1,27 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const result = document.getElementById('result');
+let isDrawing = false;
 
-let painting = false;
+canvas.addEventListener('mousedown', () => (isDrawing = true));
+canvas.addEventListener('mouseup', () => (isDrawing = false));
+canvas.addEventListener('mousemove', draw);
 
-canvas.addEventListener('mousedown', () => (painting = true));
-canvas.addEventListener('mouseup', () => (painting = false));
-canvas.addEventListener('mousemove', (e) => {
-    if (!painting) return;
+function draw(event) {
+    if (!isDrawing) return;
     ctx.fillStyle = 'black';
-    ctx.fillRect(e.offsetX, e.offsetY, 10, 10);
-});
+    ctx.beginPath();
+    ctx.arc(event.offsetX, event.offsetY, 5, 0, Math.PI * 2);
+    ctx.fill();
+}
 
 document.getElementById('predict').addEventListener('click', async () => {
     const data = canvas.toDataURL('image/png');
-    const response = await fetch('/recognize', {
+    const res = await fetch('/predict', {
         method: 'POST',
-        body: data
+        body: data,
     });
-    const json = await response.json();
-    result.textContent = `Result: ${json.digit}`;
+    const result = await res.json();
+    document.getElementById('result').textContent = result.success
+        ? `Prediction: ${result.prediction}`
+        : `Error: ${result.error}`;
 });

@@ -1,47 +1,52 @@
-use onnxruntime::{environment::Environment, ndarray::Array, session::Session};
+use onnxruntime::session::Session;
+use onnxruntime::{environment::Environment, tensor::OrtOwnedTensor, GraphOptimizationLevel};
 use std::error::Error;
-use image::io::Reader as ImageReader;
-use image::DynamicImage;
 
-pub fn load_model() -> Session {
-    let environment = Environment::builder()
-        .with_name("handwritten_digit_recognition")
+lazy_static::lazy_static! {
+    static ref ENV: Environment = Environment::builder()
+        .with_name("onnxruntime_env")
+        .with_log_level(onnxruntime::LoggingLevel::Warning)
         .build()
         .unwrap();
+}
 
-    environment
-        .new_session_builder()
+pub fn load_model() -> Session<'static> {
+    ENV.new_session_builder()
+        .unwrap()
+        .with_optimization_level(GraphOptimizationLevel::All)
         .unwrap()
         .with_model_from_file("models/model.onnx")
         .unwrap()
 }
 
-pub async fn predict_digit(
-    body: &[u8],
-    model: std::sync::Arc<tokio::sync::Mutex<Session>>,
-) -> Result<i64, Box<dyn Error>> {
-    // Конвертируем байты в изображение
-    let img = ImageReader::new(std::io::Cursor::new(body))
-        .with_guessed_format()?
-        .decode()?;
+pub fn predict(body: &[u8], session: &Session) -> Result<i64, Box<dyn Error>> {
+    let input_data = preprocess_input(body)?;
 
-    let processed = preprocess_image(&img)?;
+    let input_tensor = vec![input_data];
 
-    // Запускаем модель
-    let session = model.lock().await;
-    let input_tensor = Array::from_shape_vec((1, 1, 28, 28), processed)?.into_dyn();
-    let outputs = session.run(vec![input_tensor.into()])?;
-    let result = outputs[0].as_array().unwrap();
+    let outputs: Vec<OrtOwnedTensor<f32, _>> = session.run(vec![input_tensor])?;
+    let prediction = outputs[0].to_vec();
 
-    Ok(result.argmax().unwrap() as i64)
+    // Определяем индекс максимального значения (т.е. предсказанную цифру)
+    let predicted_digit = prediction
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .map(|(idx, _)| idx)
+        .ok_or("Failed to process prediction")?;
+
+    Ok(predicted_digit as i64)
 }
 
-fn preprocess_image(img: &DynamicImage) -> Result<Vec<f32>, Box<dyn Error>> {
-    let gray_image = img.to_luma8();
-    let resized = image::imageops::resize(&gray_image, 28, 28, image::imageops::Nearest);
-    let normalized = resized
-        .pixels()
-        .map(|p| p[0] as f32 / 255.0)
-        .collect::<Vec<f32>>();
-    Ok(normalized)
+fn preprocess_input(body: &[u8]) -> Result<Vec<f32>, Box<dyn Error>> {
+    let input_data: Vec<f32> = body
+        .iter()
+        .map(|&byte| byte as f32 / 255.0) // Нормализация значений
+        .collect();
+
+    if input_data.len() != 28 * 28 {
+        return Err("Invalid input size, expected 28x28 grayscale image".into());
+    }
+
+    Ok(input_data)
 }
